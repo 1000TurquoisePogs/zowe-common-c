@@ -64,10 +64,49 @@ typedef struct Volser_tag {
 
 static int getVolserForDataset(const DatasetName *dataset, Volser *volser);
 
+static char *getHexDecodedPath(char *hexPath) {
+  int nameLength = strlen(hexPath);
+  int lParenIndex = indexOf(hexPath, nameLength, '(', 0);
+  if (lParenIndex != -1 
+      && nameLength > lParenIndex+3
+      && hexPath[lParenIndex+1] == '0'
+      && hexPath[lParenIndex+2] == 'x') {   
+    int rParenIndex = lastIndexOf(hexPath, nameLength, ')');
+    int nextRParenIndex = indexOf(hexPath, nameLength, ')', lParenIndex);
+    if (nextRParenIndex != rParenIndex || nameLength != lParenIndex+21) {
+      //something weird going on.
+      printf("I dont like it. nrp=%d rp=%d l=%d l+21=%d\n",nextRParenIndex, rParenIndex, nameLength, lParenIndex+21);
+      return NULL;
+    }
+    char newPath[nameLength-9];
+    printf("newPath will be len=%d\n",nameLength-9);
+    memcpy(newPath,hexPath,lParenIndex+1);
+    char hex[3];
+    hex[2] = '\0';
+    int copyPos = lParenIndex+1;
+    for (int i = lParenIndex+3; i < rParenIndex;) {
+      hex[0] = hexPath[i];
+      hex[1] = hexPath[i+1];
+      newPath[copyPos++] = (char)(0xff & strtol(hex,NULL,16));
+      printf("hex=%2s became %d\n",hex,newPath[copyPos-1]);
+      i = i+2;
+    }
+    newPath[copyPos++] = ')';
+    newPath[copyPos++] = '\'';
+    printf("putting a null at %d\n",copyPos);
+    newPath[copyPos] = '\0';
+    printf("Returning new path=%58s. copypos=%d\n", newPath, copyPos);
+    return newPath;
+  } else {
+    return NULL;
+  } 
+}
+
 int streamDataset(Socket *socket, char *filename, int recordLength, jsonPrinter *jPrinter){
 #ifdef __ZOWE_OS_ZOS
   int defaultSize = DATA_STREAM_BUFFER_SIZE;
   FILE *in;
+
   if (recordLength < 1){
     recordLength = defaultSize;
     in = fopen(filename,"rb");
@@ -433,7 +472,7 @@ void addMemberedDatasetMetadata(char *datasetName, int nameLength,
                                 char *volser, int volserLength,
                                 char *memberQuery, int memberLength,
                                 jsonPrinter *jPrinter,
-                                int includeUnprintable) {
+                                int unprintableAsPercentEncode) {
 
   int isPDS = FALSE;
   char dscb[INDEXED_DSCB] = {0};
@@ -471,37 +510,43 @@ void addMemberedDatasetMetadata(char *datasetName, int nameLength,
     for (int i = 0; i < memberCount; i++){
       char *memberName = stringElement->string;
       if (matchWithWildcards(theQuery,memberLength,memberName,8,0)) {
-        char percentName[24];
+        char jsonMemberName[25];
         int namePos = 0;
         int containsUnprintable = FALSE;
         for (int j = 0; j < 8; j++) {
           if (memberName[j] < 0x40){
             containsUnprintable = TRUE;
-            if (includeUnprintable == FALSE){
+            if (unprintableAsPercentEncode == FALSE){
               break;
+            } else {
+	      //backwards compatibility
+	      sprintf(&jsonMemberName[namePos],"%%%2.2x",memberName[j]);
+	      namePos = namePos+3;
             }
-            printf("Member pos=%d has hex of 0x%x, will change.\n",j,memberName[j]);
-            printf("Member name: %s, percent name:%s\n",memberName,percentName);
-            sprintf(&percentName[namePos],"%%%2.2x",memberName[j]);
-            printf("After: percentName: %s\n",percentName);
-            namePos = namePos+3;
-          }
-          else {
-            percentName[namePos] = memberName[j];
-            namePos++;
           }
         }
-
-        if (containsUnprintable == FALSE || includeUnprintable == TRUE){
-          percentName[namePos] = '\0';
-
-          jsonStartObject(jPrinter,NULL);
-          {
-            jsonAddString(jPrinter,"name",percentName);
-          }
-          jsonEndObject(jPrinter);
-
-        }
+	jsonStartObject(jPrinter,NULL);
+        if (containsUnprintable && !unprintableAsPercentEncode){
+	  jsonMemberName[0]='0';
+	  jsonMemberName[1]='x';
+	  namePos=2;
+	  for (int j = 0; j < 8; j++) {
+	    sprintf(&jsonMemberName[namePos],"%2.2x",memberName[j]);
+	    namePos = namePos+2;
+	  }
+        } else if (!containsUnprintable){
+	  for (int j = 0; j < 8; j++){
+	    if (memberName[j]=='"'){
+	      jsonMemberName[namePos++]='\\';
+              jsonMemberName[namePos++]='"';
+	    } else {
+	      jsonMemberName[namePos++]=memberName[j];
+	    }
+	  }
+	}
+	jsonMemberName[namePos]='\0';
+	jsonAddString(jPrinter,"name",jsonMemberName);
+	jsonEndObject(jPrinter);
       }
       stringElement = stringElement->next;
     }
@@ -841,6 +886,17 @@ void updateDataset(HttpResponse* response, char* absolutePath, int jsonMode) {
 
   HttpRequest *request = response->request;
 
+  HttpRequestParam *hexMemberParam = getCheckedParam(request,"hexMember");
+  char *hexMemberArg = (hexMemberParam ? hexMemberParam->stringValue : "");
+  int hexMemberDecode = !strcmp(hexMemberArg, "true") ? TRUE : FALSE;
+  if (hexMemberDecode == TRUE) {
+    char *hexDecoded = getHexDecodedPath(absolutePath);
+    if (hexDecoded) {
+      absolutePath=hexDecoded;
+    }
+  }
+  printf("abspath=%s\n",absolutePath);
+  /*
   FileInfo info;
   int returnCode;
   int reasonCode;
@@ -874,7 +930,7 @@ void updateDataset(HttpResponse* response, char* absolutePath, int jsonMode) {
                                              convertedBody, translationLength,
                                              errorBuffer, sizeof(errorBuffer));
     if (json) {
-      jsonPrinter *printer = makeJsonPrinter(1); /* STDOUT_FILENO); */
+      jsonPrinter *printer = makeJsonPrinter(1); //
       jsonPrint(printer, json);
       freeJsonPrinter(printer);
       if (jsonIsObject(json)){
@@ -892,7 +948,10 @@ void updateDataset(HttpResponse* response, char* absolutePath, int jsonMode) {
   else {
     respondWithError(response,HTTP_STATUS_INTERNAL_SERVER_ERROR,"Could not translate character set to EBCDIC");    
   }
+
+
   safeFree(convertedBody,conversionBufferLength);
+*/
 #endif /* __ZOWE_OS_ZOS */
 }
 
@@ -972,6 +1031,13 @@ void respondWithDataset(HttpResponse* response, char* absolutePath, int jsonMode
   FileInfo info;
   int returnCode;
   int reasonCode;
+
+  char *hexDecoded = getHexDecodedPath(absolutePath);
+  if (hexDecoded) {
+    absolutePath=hexDecoded;
+  }
+  printf("abspath=%s\n",absolutePath);
+
   FILE *in = fopen(absolutePath, "r");
   if (in == NULL) {
     respondWithError(response,HTTP_STATUS_NOT_FOUND,"File could not be opened or does not exist");
@@ -1440,7 +1506,7 @@ void respondWithDatasetMetadata(HttpResponse *response) {
 
   HttpRequestParam *unprintableParam = getCheckedParam(request,"includeUnprintable");
   char *unprintableArg = (unprintableParam ? unprintableParam->stringValue : "");
-  int includeUnprintable = !strcmp(unprintableArg, "true") ? TRUE : FALSE;
+  int unprintableAsPercentEncode = !strcmp(unprintableArg, "true") ? TRUE : FALSE;
 
   HttpRequestParam *resumeNameParam = getCheckedParam(request,"resumeName");
   char *resumeNameArg = (resumeNameParam ? resumeNameParam->stringValue : NULL);
@@ -1548,7 +1614,7 @@ void respondWithDatasetMetadata(HttpResponse *response) {
             addMemberedDatasetMetadata(datasetName, datasetNameLength,
                                        volser, volserLength,
                                        pdsMember, memberNameLength,
-                                       jPrinter, includeUnprintable);
+                                       jPrinter, unprintableAsPercentEncode);
           }
         }
         jsonEndObject(jPrinter);
