@@ -1,5 +1,4 @@
 
-
 /*
   This program and the accompanying materials are
   made available under the terms of the Eclipse Public License v2.0 which accompanies
@@ -38,6 +37,7 @@
 #pragma linkage(BPX4WRT,OS)
 #pragma linkage(BPX4REN,OS)
 #pragma linkage(BPX4CHR,OS)
+#pragma linkage(BPX4CHM,OS)
 #pragma linkage(BPX4CLO,OS)
 #pragma linkage(BPX4STA,OS)
 #pragma linkage(BPX4UNL,OS)
@@ -55,6 +55,7 @@
 #define BPXWRT BPX4WRT
 #define BPXREN BPX4REN
 #define BPXCHR BPX4CHR
+#define BPXCHM BPX4CHM
 #define BPXCLO BPX4CLO
 #define BPXSTA BPX4STA
 #define BPXUNL BPX4UNL
@@ -73,6 +74,7 @@
 #pragma linkage(BPX1WRT,OS)
 #pragma linkage(BPX1REN,OS)
 #pragma linkage(BPX1CHR,OS)
+#pragma linkage(BPX1CHM,OS)
 #pragma linkage(BPX1CLO,OS)
 #pragma linkage(BPX1STA,OS)
 #pragma linkage(BPX1UNL,OS)
@@ -90,6 +92,7 @@
 #define BPXWRT BPX1WRT
 #define BPXREN BPX1REN
 #define BPXCHR BPX1CHR
+#define BPXCHM BPX1CHM
 #define BPXCLO BPX1CLO
 #define BPXSTA BPX1STA
 #define BPXUNL BPX1UNL
@@ -442,7 +445,16 @@ int fileClose(UnixFile *file, int *returnCode, int *reasonCode) {
   return returnValue;
 }
 
+int fileChangeTagPure(const char *fileName, int *returnCode, int *reasonCode,
+                      int ccsid, bool pure);
+
 int fileChangeTag(const char *fileName, int *returnCode, int *reasonCode, int ccsid) {
+  bool pure = true;
+  fileChangeTagPure(fileName, returnCode, reasonCode, ccsid, pure);
+  }
+
+int fileChangeTagPure(const char *fileName, int *returnCode, int *reasonCode,
+                      int ccsid, bool pure) {
   int nameLength = strlen(fileName);
   int attributeLength = sizeof(BPXYATT);
   int *reasonCodePtr;
@@ -462,8 +474,8 @@ int fileChangeTag(const char *fileName, int *returnCode, int *reasonCode, int cc
 
   attributes.fileTagCCSID = ccsid;
 
-  if (ccsid != CCSID_BINARY) {
-    attributes.fileTagFlags = FILE_PURE_TEXT;
+  if (pure) {
+   attributes.fileTagFlags = FILE_PURE_TEXT;
   }
 
   BPXCHR(nameLength,
@@ -486,6 +498,50 @@ int fileChangeTag(const char *fileName, int *returnCode, int *reasonCode, int cc
     }
     else {
       printf("BPXCHR (%s) OK: returnValue: %d\n\n", fileName, returnValue);
+    }
+  }
+
+  if (returnValue != 0) {
+    returnValue = -1;
+  }
+  else{
+    *returnCode = 0;
+    *reasonCode = 0;
+  }
+  return returnValue;
+}
+
+int fileChangeMode(const char *fileName, int *returnCode, int *reasonCode, int mode) {
+  int nameLength = strlen(fileName);
+  int *reasonCodePtr;
+  int returnValue = 0;
+  *returnCode = *reasonCode = 0;
+
+#ifndef _LP64
+  reasonCodePtr = (int*) (0x80000000 | ((int)reasonCode));
+#else
+  reasonCodePtr = reasonCode;
+#endif
+
+  BPXCHM(nameLength,
+         fileName,
+         mode,
+         &returnValue,
+         returnCode,
+         reasonCodePtr);
+
+  if (fileTrace) {
+    if (returnValue != 0) {
+# ifdef METTLE
+      printf("BPXCHM FAILED: returnValue: %d, returnCode: %d, reasonCode: 0x%08x\n",
+             returnValue, *returnCode, *reasonCode);
+# else
+      printf("BPXCHM FAILED: returnValue: %d, returnCode: %d, reasonCode: 0x%08x, strError: (%s)\n",
+             returnValue, *returnCode, *reasonCode, strerror(*returnCode));
+# endif
+    }
+    else {
+      printf("BPXCHM (%s) OK: returnValue: %d\n\n", fileName, returnValue);
     }
   }
 
@@ -772,6 +828,10 @@ int symbolicFileInfo(const char *filename, BPXYSTAT *stats, int *returnCode, int
 
 int fileInfoIsDirectory(const FileInfo *info) {
   return (info->fileType == BPXSTA_FILETYPE_DIRECTORY ? TRUE: FALSE);
+}
+
+int fileInfoIsRegularFile(const FileInfo *info) {
+  return (info->fileType == BPXSTA_FILETYPE_REGULAR ? TRUE: FALSE);
 }
 
 int fileInfoCCSID(const FileInfo *info) {
@@ -1326,6 +1386,262 @@ int directoryCopy(const char *existingPathName, const char *newPathName, int *re
   return 0;
 }
 
+/*
+ * Recursively, change the file tags of the requested file/tree 
+*/
+#include "ccsidList.c"
+
+int findCcsidId( const char *string){
+  int ccsid = -1;
+  int i = 0;
+  int tccsid;
+  char *pName;
+
+  /* Some type commands cannot specify ccsid */
+  if (string == NULL) {
+    return 0;
+  }
+
+  /* search table for valid  */
+  if (stringIsDigit(string)) {
+    sscanf (string, "%d", &tccsid);
+
+    while (ccsidList[i].idName != NULL) {
+      if (ccsidList[i].ccsid == tccsid) {
+        ccsid = tccsid;
+        return ccsid;
+      }
+      i ++;
+    }
+  } else {
+    /* Search array for matching name */
+    while (ccsidList[i].idName != NULL) {
+      char tstring[40] = {0};
+      strncpy (tstring, string, sizeof(tstring) -1);
+
+      strupcase(tstring);
+      if ((strlen(ccsidList[i].idName) == strlen(tstring)) &&
+          (strcmp (ccsidList[i].idName, tstring) == 0)) {
+        ccsid =ccsidList[i].ccsid;
+        return ccsid;
+      }
+      i ++;
+    }
+  }
+  return -1;
+}
+
+int patternChangeTagTest(char *message, int message_length, 
+                char *type, char *codePage, bool *pure, int *ccsid) {
+  int lccsid =  findCcsidId(codePage);
+
+  /* Switch to do proper change tag */
+  if  (!strcmp( strupcase(type), "BINARY"))  {
+    *pure = FALSE;
+    if (lccsid != 0) {
+      *ccsid =  -1;
+      snprintf(message, message_length, "%s", 
+               "binary specified with codeset");
+      return -1;
+    }
+    else {
+      *ccsid =  CCSID_BINARY;
+      return 0;
+    }
+  } 
+
+  if  (!strcmp( strupcase(type), "TEXT"))  {
+    *pure = TRUE;
+    if (lccsid <= 0) {
+      snprintf(message, message_length, "%s", 
+               "text specified, undefined codeset");
+
+      return -1;
+    }
+    else {
+      *ccsid =  lccsid;
+      return 0;
+    }
+  } 
+
+  if ((!strcmp( strupcase(type), "DELETE")) ||
+      (!strcmp( strupcase(type), "UNTAGGED"))) {
+    *pure = FALSE;
+    if (lccsid > 0) {
+      *ccsid =  -1;
+      snprintf(message, message_length, "%s", 
+               "delete specified with codeset");
+      return -1;
+    }
+    else {
+      *ccsid =  CCSID_UNTAGGED;
+      return 0;
+    }
+  } 
+
+  if  (!strcmp( strupcase(type), "MIXED"))  {
+    *pure = FALSE;
+    if (lccsid <= 0) {
+      snprintf(message, message_length, "%s", 
+               "mixed specified with undefined codeset");
+      return -1;
+    }
+    else {
+      *ccsid =  lccsid;
+      return 0;
+    }
+  } 
+
+  *pure = FALSE;
+  *ccsid = lccsid;
+  return 0;
+}
+
+/* Check to see if the code should change the tag field */
+static int patternChangeTagCheck(const char *fileName, int *retCode,
+       int *resCode, char *codepage, char * type, const char *pattern) {
+
+  bool pure = FALSE;
+  int ccsid;
+  char message[30];
+
+  const char * baseName;
+  int returnCode = 0, reasonCode = 0;
+  int returnValue = 0;
+
+  /* Test to see if a substring is part of base name */
+  /* If not, then return                             */
+  if (pattern != NULL) {
+    if ((baseName = strrstr(fileName, "/")) == NULL ) {
+      baseName = fileName;
+    }
+    if (strstr(baseName, pattern) == NULL) {
+       return 0;
+    }
+  }
+
+  if (-1 == patternChangeTagTest(message, sizeof (message),
+                                type, codepage, &pure, &ccsid)) {
+    returnValue = -1;
+    goto ExitCode;
+  } 
+
+  /* Change tag */
+  if (-1 == (fileChangeTagPure(fileName, &returnCode, &reasonCode, ccsid, pure))) {
+    returnValue = -1;
+    goto ExitCode;
+  }
+
+
+ExitCode:
+  *retCode = returnCode;
+  *resCode = reasonCode;
+  return     returnValue;
+}
+
+
+/* Recursively, trace down directory tree and change file tags */
+int directoryChangeTagRecursive(const char *pathName, char *type,
+          char *codepage, int recursive, char * pattern,
+          int *retCode, int *resCode){
+
+  int returnCode = 0, reasonCode = 0, status = 0;
+  int returnValue = 0;
+  FileInfo info = {0};
+  int CCSID = 0;
+
+  /* Find the ccsid for the codepage */
+  if (-1 == (CCSID = findCcsidId(codepage))) {
+    goto ExitCodeError;
+  }
+
+  /* Get initial file info*/
+  status = fileInfo(pathName, &info, &returnCode, &reasonCode);
+  if (status == -1){
+    goto ExitCodeError;
+  }
+
+  /* If directory and not recursive, just return */
+  if ((fileInfoIsDirectory(&info) && !recursive)) {
+    goto ExitCode;
+    }
+
+  /* Request is for a file. Handle it and exit */
+  if (fileInfoIsRegularFile(&info)) {
+    if( -1 == patternChangeTagCheck (pathName, &returnCode, 
+                            &reasonCode, codepage, type, pattern)) {
+      goto ExitCodeError;
+    } else {
+      goto ExitCode;
+    }
+  } 
+
+  /* Get list of files in this directory */
+  const char *entryArray[MAX_NUM_ENTRIES] = {0};
+  char entryBuffer[MAX_ENTRY_BUFFER_SIZE] = {0};
+  UnixFile *dir = directoryOpen(pathName, &returnCode, &reasonCode);
+  if (dir == NULL) {
+    goto ExitCodeError;
+  }
+
+  int entries = directoryRead(dir, entryBuffer, sizeof(entryBuffer),
+                              &returnCode, &reasonCode);
+  if (entries == -1) {
+    goto ExitCodeError;
+  }
+
+  int validEntries = getValidDirectoryEntries(entries, entryBuffer, 
+                                              entryArray);
+  /* Loop through all files in directory                     */
+  /* If a subdirectory found, recursively call this function */
+  /* At this point, we know recursive is true.               */
+  for (int i = 0; i < validEntries; i++) {
+    char pathBuffer[USS_MAX_PATH_LENGTH + 1] = {0};
+    snprintf(pathBuffer, sizeof(pathBuffer), "%s/%s", pathName, entryArray[i]);
+
+    if (-1 == (fileInfo(pathBuffer, &info, &returnCode, &reasonCode))){
+      returnValue = -1;
+      goto ExitCodeError;
+    }
+
+    if (fileInfoIsDirectory(&info)) {
+      /* Change tag of all sub-directories and files there-in */
+      if (-1 ==  directoryChangeTagRecursive(
+                         pathBuffer, type, codepage, recursive, pattern,
+                         &returnCode, &reasonCode) ){
+        goto ExitCodeError;
+      }
+    }
+    else {
+      /* change mode of this file, not a directory */
+      if (fileInfoIsRegularFile(&info)) {
+        if( -1 == patternChangeTagCheck (pathBuffer, &returnCode, &reasonCode, 
+                                  codepage, type, pattern)) {
+          goto ExitCodeError;
+        }
+      }
+    }
+  } /* End of for loop */
+
+  goto ExitCode;
+ExitCodeError:
+    returnValue = -1;
+ExitCode:
+    *retCode = returnCode;
+    *resCode = reasonCode;
+  if (fileTrace) {
+    if (returnValue  != 0) {
+      printf("directoryChangeModeRecursive: Failed\n");
+    }
+    else {
+      printf("directoryChangeModeRecursive: Passed\n");
+   }
+  }
+  return returnValue;
+}
+
+
+
 int directoryRename(const char *oldDirname, const char *newDirName, int *returnCode, int *reasonCode){
   int returnValue = fileRename(oldDirname, newDirName, returnCode, reasonCode);
 
@@ -1494,7 +1810,172 @@ int fileUnlock(UnixFile *file, int *returnCode, int *reasonCode) {
 
   return returnValue;
 }
+#ifndef METTLE
+/* Library does not support reverse string-string */
+static const char* strrstr(const char * base, const char * find) {
+  const char * returnPtr = NULL;
+  const char * newPtr = base;
+  while ((strstr(newPtr, find)) != NULL) {
+    returnPtr = strstr(newPtr, find);
+    newPtr = returnPtr + 1;
+  }
+  return returnPtr;
+}
+#endif
 
+static int patternChangeModeFile (const char *fileName,
+                                 int mode, const char *compare,
+                                 int *returnCode, int *reasonCode){
+  int status;
+  const char * baseName;
+
+  if (fileTrace) {
+   printf("ChangeModeFile: %s TO %3o  \n", fileName, mode);
+  }
+
+  /* Test to see if a substring is part of base name */
+  /* If not, then return                             */
+  if (compare != NULL) {
+    if ((baseName = strrstr(fileName, "/")) == NULL ) {
+      baseName = fileName;
+    }
+    if (strstr(baseName, compare) == NULL) {
+       return 0;
+    }
+  }
+
+  /* Check to see if change in mode is requested */
+  status = fileChangeMode(fileName, returnCode, reasonCode, mode);
+    if (status == -1) {
+     return -1;
+    }
+
+  return 0;
+}
+
+#define CHANGE_MODE_RECURSIVE  0x1
+ 
+int directoryChangeModeRecursive(const char *pathName, int flag,
+               int mode, const char * compare, int *retCode, int *resCode){
+  int returnCode = 0, reasonCode = 0, status = 0;
+  int returnValue = 0;
+  FileInfo info = {0};
+
+  status = fileInfo(pathName, &info, &returnCode, &reasonCode);
+  if (status == -1){
+    *retCode = returnCode;
+    *resCode = reasonCode;
+    returnValue = -1;
+    goto ExitCode;
+  }
+
+  /* Request is for a file. Handle it and exit */
+  if (!fileInfoIsDirectory(&info)) {
+    if (fileInfoIsRegularFile(&info)) {
+      if( -1 == patternChangeModeFile (pathName, mode, compare,
+                                         &returnCode, &reasonCode)) {
+        *retCode = returnCode;
+        *resCode = reasonCode;
+        returnValue = -1;
+      }
+    } else {
+        *retCode = 0;
+        *resCode = 0;
+        returnValue = -1;
+    }
+    goto ExitCode;
+  } else {
+    if (!(flag & CHANGE_MODE_RECURSIVE)) { 
+      if( -1 == patternChangeModeFile (pathName, mode, compare,
+                                         &returnCode, &reasonCode)) {
+        *retCode = returnCode;
+        *resCode = reasonCode;
+        returnValue = -1;
+      }
+    goto ExitCode;
+    } 
+  }
+
+  UnixFile *dir = directoryOpen(pathName, &returnCode, &reasonCode);
+  if (dir == NULL) {
+    *retCode = returnCode;
+    *resCode = reasonCode;    
+    returnValue = -1;
+    goto ExitCode;
+  }
+
+  char entryBuffer[MAX_ENTRY_BUFFER_SIZE] = {0};
+  int entries = directoryRead(dir, entryBuffer, sizeof(entryBuffer), 
+                              &returnCode, &reasonCode);
+  if (entries == -1) {
+    *retCode = returnCode;
+    *resCode = reasonCode;    
+    returnValue = -1;
+    goto ExitCode;
+  }
+  
+  const char *entryArray[MAX_NUM_ENTRIES] = {0};
+  int validEntries = getValidDirectoryEntries(entries, entryBuffer, entryArray);
+
+  for (int i = 0; i < validEntries; i++) {
+    char pathBuffer[USS_MAX_PATH_LENGTH + 1] = {0};
+    snprintf(pathBuffer, sizeof(pathBuffer), "%s/%s", pathName, entryArray[i]);
+
+    status = fileInfo(pathBuffer, &info, &returnCode, &reasonCode);
+    if (status == -1){
+      *retCode = returnCode;
+      *resCode = reasonCode;
+      returnValue = -1;
+      goto ExitCode;
+    }
+
+    if (fileInfoIsDirectory(&info)) {
+      /* Change mode of all sub-directories and files there-in */
+      if (flag & CHANGE_MODE_RECURSIVE) { 
+        if (-1 ==  directoryChangeModeRecursive(
+                               pathBuffer, flag, mode, compare,
+                               &returnCode, &reasonCode) ){
+          *retCode = returnCode;
+          *resCode = reasonCode;
+          returnValue = -1;
+          goto ExitCode;
+        }
+      }
+    }
+    else {
+      /* change mode of this file, not a directory */
+      if (fileInfoIsRegularFile(&info)) {
+        if( -1 == patternChangeModeFile (pathBuffer, mode, compare,
+                                         &returnCode, &reasonCode)) { 
+          *retCode = returnCode;
+          *resCode = reasonCode;
+          returnValue = -1;
+          goto ExitCode;
+        }
+      }
+    }
+  }
+
+  /* Change mode of this directory */
+  if( -1 == patternChangeModeFile (pathName, mode, compare,
+                                    &returnCode, &reasonCode)) { 
+    *retCode = returnCode;
+    *resCode = reasonCode;
+    returnValue = -1;
+    goto ExitCode;
+  }
+
+ExitCode:
+  if (fileTrace) {
+    if (returnValue  != 0) {
+      printf("directoryChangeModeRecursive: Failed\n");
+    }
+    else {
+      printf("directoryChangeModeRecursive: Passed\n");
+   }
+  }
+  return returnValue;
+}
 
 /*
   This program and the accompanying materials are
