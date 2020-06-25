@@ -507,7 +507,9 @@ void jsonWriteQuotedString(jsonPrinter *p, char *s) {
 static
 void jsonWriteQuotedUnterminatedString(jsonPrinter *p, char *s, int len) {
   jsonWrite(p, "\"", false, SOURCE_CODE_CHARSET);
-  jsonConvertAndWriteBuffer(p, s, len, true, p->inputCCSID);
+  if (len>0) {
+    jsonConvertAndWriteBuffer(p, s, len, true, p->inputCCSID);
+  }
   jsonWrite(p, "\"", false, SOURCE_CODE_CHARSET);
 }
 

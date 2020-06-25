@@ -98,8 +98,18 @@ int streamDataset(Socket *socket, char *filename, int recordLength, jsonPrinter 
     while (!feof(in)){
       bytesRead = fread(buffer,1,recordLength,in);
       if (bytesRead > 0){
-        jsonAddUnterminatedString(jPrinter, NULL, buffer, bytesRead);
-        contentLength = contentLength + bytesRead;
+        int empty = TRUE;
+        for (int i = bytesRead; i>-1; i--) {
+          if (buffer[i] > 0x3A) {
+            jsonAddUnterminatedString(jPrinter, NULL, buffer, i);
+            empty = FALSE;
+            contentLength = contentLength + i;
+            break;
+          }
+        }
+        if (empty) {
+          jsonAddUnterminatedString(jPrinter, NULL, buffer, 0);
+        }
       }
       else if (bytesRead == 0){
         break;
